@@ -1,1 +1,1272 @@
-https://github.com/Killerwattz-code/copy.git
+# FQDN of the dynatrace environment
+$DEV_DTM_SERVER = "dynatrace-dev.maas.csda.gov.au"
+$PREPROD_DTM_SERVER = "dynatrace-preprod.maas.csda.gov.au"
+$PROD_DTM_SERVER = "dynatrace.maas.csda.gov.au"
+$Tenant = Read-Host "Please provide the Dynatrace cluster (prod, preprod, dev)"
+#$ClusterAPIToken = Read-Host "Please provided the API token"
+$DEV_API_TOKEN = "<HIDDEN TOKEN>"
+$PREPROD_API_TOKEN = "<HIDDEN TOKEN>"
+$PROD_API_TOKEN = "<HIDDEN TOKEN>"
+
+$DEV_SelfMon_API = "https://dynatrace-dev.maas.csda.gov.au/e/d9068daa-3042-4b64-88c1-c1c04dae4a48"
+$Dev_SelfMon_Token = "<HIDDEN TOKEN>"
+$Dev_SelfMon_MZ= "Dev Cluster"
+
+$Preprod_SelfMon_API = "https://dynatrace-dev.maas.csda.gov.au/e/d9068daa-3042-4b64-88c1-c1c04dae4a48"
+$Preprod_SelfMon_Token = "<HIDDEN TOKEN>"
+$Preprod_SelfMon_MZ= "PreProd Cluster"
+
+#$Prod_SelfMon_API = 
+#$Prod_SelfMon_Token = 
+#$Prod_SelfMon_MZ= 
+
+$Dev_SynthHealthToken = "<HIDDEN TOKEN>"
+$Preprod_SynthHealthToken = "<HIDDEN TOKEN>"
+$Prod_SynthHealthToken = "<HIDDEN TOKEN>"
+$DSS_NonProd_SynthHealthToken = "<HIDDEN TOKEN>"
+#$Dev_ProblemNotifications_Token
+
+$Dev_Environment = "https://dynatrace-dev.maas.csda.gov.au/e/d9068daa-3042-4b64-88c1-c1c04dae4a48"
+$Preprod_Environment = "https://dynatrace-preprod.maas.csda.gov.au/e/db7ed109-d810-4e26-b33d-172bf792e59c"
+$Prod_Environment = "https://dynatrace.maas.csda.gov.au/e/6de8e2e9-6719-45b3-86be-7effcb9f6525"
+$DSSNonProd_Environment = "https://dynatrace.maas.csda.gov.au/e/be5370ee-009a-4ab8-b41e-2dea52067e62"
+
+if($Tenant -eq "prod")
+{
+    $ClusterInputURL = $PROD_DTM_SERVER
+    $ClusterAPIToken = $PROD_API_TOKEN
+    $SynthLocationsToken = $Prod_SynthHealthToken
+    $SynthEnvironment = $Prod_Environment
+}
+elseif($Tenant -eq "preprod")
+{
+    $ClusterInputURL = $PREPROD_DTM_SERVER
+    $ClusterAPIToken = $PREPROD_API_TOKEN
+    $SynthLocationsToken = $Preprod_SynthHealthToken
+    $SynthEnvironment = $Preprod_Environment
+}
+elseif($Tenant -eq "dev")
+{
+    $ClusterInputURL = $DEV_DTM_SERVER
+    $ClusterAPIToken = $DEV_API_TOKEN
+    $SynthLocationsToken = $Dev_SynthHealthToken
+    $SynthEnvironment = $Dev_Environment
+}
+### HTTPS REQUEST PREREQUISITES ###
+add-type -TypeDefinition  @"
+        using System.Net;
+        using System.Security.Cryptography.X509Certificates;
+        public class TrustAllCertsPolicy : ICertificatePolicy {
+            public bool CheckValidationResult(
+                ServicePoint srvPoint, X509Certificate certificate,
+                WebRequest request, int certificateProblem) {
+                return true;
+            }
+        }
+"@       
+[System.Net.ServicePointManager]::CertificatePolicy = New-Object TrustAllCertsPolicy
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$URLHeaders = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+$URLHeaders.Add("accept", "application/json; charset=utf-8")
+$URLHeaders.Add("Content-Type", "application/json; charset=utf-8")
+$URLHeaders.Add("Authorization", "Api-Token $ClusterAPIToken")
+#If token is in new format, send just the ID part of the token to Dynatrace
+if($ClusterAPIToken -match "dt0c01\.[\w]+")
+{
+    $URLHeaders.add("dynatrace-api-token-id", $Matches.Values[0])
+}
+
+Write-Output "Running health check script for cluster $ClusterInputURL"
+Write-Output ""
+$Value1 = "TestString"
+$ClusterNodesEndpoint = "https://{0}/api/v1.0/onpremise/cluster/" -f $ClusterInputURL
+$ClusterNodes = Invoke-RestMethod -Uri "$ClusterNodesEndpoint" -Method 'GET' -Headers $URLHeaders 
+
+#$ConfigEndpoint = "{0}configuration" -f $ClusterNodesEndpoint
+#Write-Output "$ConfigEndpoint"
+$ClusterInputURL = $ClusterInputURL -Replace "\n",""
+$ClusterNodesConfiguration = Invoke-WebRequest -Uri "https://$ClusterInputURL/api/v1.0/onpremise/cluster/configuration" -Method 'Get' -Headers $URLHeaders -UseBasicParsing
+#$ClusterNodesConfiguration = Invoke-RestMethod -Uri "https://$ClusterInputURL/api/v1.0/onpremise/cluster/configuration" -Method 'GET' -Headers $URLHeaders 
+$ClusterNodesConfiguration = $ClusterNodesConfiguration.Content |ConvertFrom-Json
+
+
+
+###Cluster WebUI endpoint
+Write-Host -ForegroundColor Cyan "WebUI address"
+$Endpoint = "/api/v1.0/onpremise/endpoint/webUiAddress"
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+
+Write-Host -NoNewline "webUI address for cluster is: "
+Write-Host -ForegroundColor Green "$($Result.address)"
+Write-Output ""
+
+###Cluster nodes
+Write-Host -ForegroundColor Cyan "Cluster nodes"
+$Endpoint = "/api/v1.0/onpremise/cluster"
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+
+Write-Host -NoNewline "The cluster has "
+Write-Host -NoNewline -ForegroundColor Green "$($Result.length)"
+Write-Host " nodes:"
+Write-Output ""
+
+###Cluster nodes status
+foreach ($ClusterNode in $Result)
+{
+    Write-Host -NoNewline "Node "
+    Write-Host -NoNewline -ForegroundColor Magenta "$($clusterNode.id)"
+    Write-Host -NoNewline " status in cluster is "
+    if($clusterNode.operationState -eq "RUNNING")
+    {
+        Write-Host -ForegroundColor Green "$($clusterNode.operationState)"
+    }
+    else
+    {
+    
+        Write-Host -ForegroundColor Yellow "$($clusterNode.operationState)"
+    
+    }
+}
+Write-Output ""
+###Cluster nodes remote
+foreach ($ClusterNode in $Result)
+{
+    Write-Host -NoNewline "Node "
+    Write-Host -NoNewline -ForegroundColor Magenta "$($clusterNode.id)"
+    Write-Host -NoNewline " /rest/health is "
+
+    $NodeIP = ($clusterNode.clusterMemberAddress -split ':')[0]
+    $NodeDNS = Resolve-DnsName -Name $NodeIP -DnsOnly
+    
+    try
+    {
+        $HealthCheckResult = Invoke-WebRequest -UseBasicParsing -Uri "https://$($NodeDNS[0].NameHost):8443/rest/health"
+        $HealthCheckResult.BaseResponse.Close()
+        if($HealthCheckResult.Content.GetType().Name -eq "Byte[]")
+        {
+            $HealthCheckBody = [System.Text.Encoding]::UTF8.GetString($([String]::new($HealthCheckResult.Content)).ToCharArray()).Trim()
+        }
+        else
+        {
+            $HealthCheckBody = $HealthCheckResult.Content.Trim()
+        }
+        if($HealthCheckResult.StatusCode -eq 200 -and ($HealthCheckBody -eq 'RUNNING' -or $HealthCheckBody -eq '"RUNNING"'))
+        {
+            Write-Host -ForegroundColor Green "200 - RUNNING"
+         }
+         else
+        {
+            Write-Host -ForegroundColor Red "$($HealthCheckResult.StatusCode): $($HealthCheckResult.Content)"
+         }
+    }
+    catch
+    {
+        Write-Host -ForegroundColor Red $_
+    }
+}
+Write-Output ""
+###Cluster nodes version
+foreach ($ClusterNode in $Result)
+{
+    Write-Host -NoNewline "Node "
+    Write-Host -NoNewline -ForegroundColor Magenta "$($clusterNode.id)"
+    Write-Host -NoNewline " is running version "
+    if($clusterNode.operationState -eq "RUNNING")
+    {
+        Write-Host -ForegroundColor Green "$($clusterNode.buildversion)"
+    }
+    else
+    {
+    
+        Write-Host -ForegroundColor Yellow "$($clusterNode.buildversion)"
+    
+    }
+
+}
+Write-Output ""
+###Cluster nodes IP and DNS address
+foreach ($ClusterNode in $Result)
+{
+    Write-Host -NoNewline "Node "
+    Write-Host -NoNewline -ForegroundColor Magenta "$($clusterNode.id)"
+    Write-Host -NoNewline " listening at "
+    
+    $NodeIP = ($clusterNode.clusterMemberAddress -split ':')[0]
+    $NodeDNS = Resolve-DnsName -Name $NodeIP -DnsOnly
+    Write-Host -NoNewline -ForegroundColor Green $NodeIP
+    Write-Host -NoNewline " - "
+    Write-Host -NoNewline -ForegroundColor Green $NodeDNS[0].NameHost
+    
+    $NodeNumber = [string]($clusternode.id)
+    $NodeNumberString = $NodeNumber.PadLeft(2,'0')
+    $NodeAlias = "n" + $NodeNumberString + "." + $ClusterInputURL
+    $NodeAliasResolve = Resolve-DnsName -Name "$NodeAlias" -DnsOnly
+          
+    if($NodeAliasResolve.IP4Address -eq $NodeIP)
+    {
+        Write-Host -NoNewline " - "
+        Write-Host -ForegroundColor Green $NodeAlias
+    }
+    else
+    {
+        Write-Host -ForegroundColor Yellow $NodeAlias " not resolved correctly"
+    }
+}
+Write-Output ""
+
+###Web UI check
+foreach ($ClusterNode in $ClusterNodesConfiguration.clusterNodes)
+{
+    Write-Host -NoNewline "Node "
+    Write-Host -NoNewline -ForegroundColor Magenta "$($clusterNode.id)"
+    Write-Host -NoNewline " "
+    #Write-Host -NoNewline " listening at "
+    if($ClusterNode.webUI -eq $true)
+    {
+        $NodeIP = $clusterNode.ipAddress
+        $NodeDNS = Resolve-DnsName -Name $NodeIP -DnsOnly | Where-Object {$_.Type -eq "PTR"}
+          
+        try
+        {
+            $WebUIResult = Invoke-WebRequest -UseBasicParsing "https://$($NodeDNS.Server):8022"
+            $WebUIResult.BaseResponse.Close()
+            if($WebUIResult.Content.GetType().Name -eq "Byte[]")
+            {
+                $WebUIBody = [System.Text.Encoding]::UTF8.GetString($([String]::new($HealthCheckResult.Content)).ToCharArray())
+            }
+            else
+            {
+                $WebUIBody = $HealthCheckResult.Content
+            }
+            Write-Host -NoNewline "checking WebUI response - "
+            Write-Host -ForegroundColor Green "$($WebUIResult.StatusCode) $($WebUIResult.StatusDescription)"
+        }
+        catch
+        {
+            Write-Host -ForegroundColor Yellow $NodeAlias " error: $error"
+        }
+    }
+    else
+    {
+        Write-Host -NoNewline "checking WebUI response - "
+        Write-Host -ForegroundColor Cyan "WebUI disabled"
+    }
+}
+Write-Output ""
+
+#SSL Certificate check
+foreach ($ClusterNode in $Result)
+{
+    
+    #Seems this API doesn't handle certificates where the Subject field isn't populated - disabling the check for the time being
+    #continue
+
+    Write-Host -NoNewline "Node "
+    Write-Host -NoNewline -ForegroundColor Magenta "$($clusterNode.id)"
+    Write-Host -NoNewline " has SSL certificate"
+    
+    $Endpoint = "/api/v1.0/onpremise/sslCertificate/SERVER/$($clusterNode.id)"
+    $Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+    
+    Write-Host -NoNewline " issued by "
+    Write-Host -NoNewline $Result.issuer
+    Write-Host -NoNewline ", issued to "
+    Write-Host -NoNewline $Result.subject
+    
+    $ExpirationDate = (Get-Date 01.01.1970)+([System.TimeSpan]::FromMilliseconds($Result.expirationDate))
+    $ExpirationTimeRange = $ExpirationDate - (Get-Date)
+    if ($ExpirationTimeRange.Days -gt 45)
+    {
+    Write-Host -ForegroundColor Green -NoNewline " and expiring on "
+    Write-Host -ForegroundColor Green "$ExpirationDate ($($ExpirationTimeRange.Days) days)"
+    }
+    elseif ($ExpirationTimeRange.Days -gt 7)
+    {
+    Write-Host -ForegroundColor Yellow -NoNewline " and expiring on "
+    Write-Host -ForegroundColor Yellow "$ExpirationDate ($($ExpirationTimeRange.Days) days)"
+    }
+    else
+    {
+    Write-Host -ForegroundColor Red -NoNewline " and expiring on "
+    Write-Host -ForegroundColor Red "$ExpirationDate ($($ExpirationTimeRange.Days) days)"
+    }
+    
+}
+Write-Output ""
+#TLS 1.0 disabled check
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls
+foreach ($ClusterNode in $ClusterNodesConfiguration.clusterNodes)
+{
+    Write-Host -NoNewline "Node "
+    Write-Host -NoNewline -ForegroundColor Magenta "$($clusterNode.id)"
+    Write-Host -NoNewline " "
+    Write-Host -NoNewline "TLSv1.0 check - "
+    if($ClusterNode.webUI -eq $true)
+    {
+        $NodeIP = $clusterNode.ipAddress
+        $NodeDNS = Resolve-DnsName -Name $NodeIP -DnsOnly | Where-Object {$_.Type -eq "PTR"}
+        
+        try
+        {
+            $WebUIResult = Invoke-WebRequest -UseBasicParsing "https://$($NodeDNS.Server):8022"
+            $WebUIResult.BaseResponse.Close()
+            Write-Host -NoNewline "checking WebUI response - "
+            Write-Host -ForegroundColor Green "$($WebUIResult.StatusCode) $($WebUIResult.StatusDescription)"
+        }
+        catch
+        {
+            Write-Host -ForegroundColor Yellow $NodeAlias " error: $error"
+        }
+    }
+    else
+    {
+        Write-Host -NoNewline "checking WebUI response - "
+        Write-Host -ForegroundColor Cyan "WebUI disabled"
+    }
+}
+Write-Output ""
+#TLS 1.1 disabled check
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls11
+foreach ($ClusterNode in $ClusterNodesConfiguration.clusterNodes)
+{
+    Write-Host -NoNewline "Node "
+    Write-Host -NoNewline -ForegroundColor Magenta "$($clusterNode.id)"
+    Write-Host -NoNewline " "
+    #Write-Host -NoNewline " listening at "
+    if($ClusterNode.webUI -eq $true)
+    {
+        $NodeIP = $clusterNode.ipAddress
+        $NodeDNS = Resolve-DnsName -Name $NodeIP -DnsOnly | Where-Object {$_.Type -eq "PTR"}
+          
+        try
+        {
+            $WebUIResult = Invoke-WebRequest -UseBasicParsing "https://$($NodeDNS.Server):8022"
+            $WebUIResult.BaseResponse.Close()
+            Write-Host -NoNewline "checking WebUI response - "
+            Write-Host -ForegroundColor Green "$($WebUIResult.StatusCode) $($WebUIResult.StatusDescription)"
+        }
+        catch
+        {
+            Write-Host -ForegroundColor Yellow $NodeAlias " error: $error"
+        }
+    }
+    else
+    {
+        Write-Host -NoNewline "checking WebUI response - "
+        Write-Host -ForegroundColor Cyan "WebUI disabled"
+    }
+}
+
+[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+Write-Output ""
+
+###Backup configuration
+Write-Host -ForegroundColor Cyan "Backup configuration"
+$Endpoint = "/api/v1.0/onpremise/backup/config"
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+
+Write-Host -NoNewline "Backup cluster status: "
+if($Result.enabled)
+{
+    Write-Host -ForegroundColor Green "Backup is enabled"
+}
+else
+{
+    Write-Host -ForegroundColor Red "Backup is disabled"
+}
+Write-Host "Backup storage path on cluster node: $($Result.storagePath)"
+
+Write-Host -NoNewline "RUM user session backup: "
+if($Result.includeRumData)
+{
+    Write-Host -ForegroundColor Green "Enabled"
+}
+else
+{
+    Write-Host -ForegroundColor Gray "Disabled"
+}
+
+Write-Host -NoNewline "Metric/timeseries backup: "
+if($Result.includeTsMetricData)
+{
+    Write-Host -ForegroundColor Green "Enabled"
+}
+else
+{
+    Write-Host -ForegroundColor Gray "Disabled"
+}
+
+
+
+Write-Output ""
+
+###Password policy for local accounts (i.e. admin account)
+Write-Host -ForegroundColor Cyan "Password policy"
+$Endpoint = "/api/v1.0/onpremise/passwordPolicy"
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+
+Write-Host -NoNewline "Minumum password length: "
+if($Result.minPasswordLength -ge 14)
+{
+    Write-Host -ForegroundColor Green $Result.minPasswordLength
+}
+else
+{
+    Write-Host -ForegroundColor Yellow $Result.minPasswordLength
+}
+
+Write-Host -NoNewline "Number of upper case: "
+if($Result.minNumberOfUppercaseChars -ge 1)
+{
+    Write-Host -ForegroundColor Green $Result.minNumberOfUppercaseChars
+}
+else
+{
+    Write-Host -ForegroundColor Yellow $Result.minNumberOfUppercaseChars
+}
+
+Write-Host -NoNewline "Number of lower case: "
+if($Result.minNumberOfLowercaseChars -ge 1)
+{
+    Write-Host -ForegroundColor Green $Result.minNumberOfLowercaseChars
+}
+else
+{
+    Write-Host -ForegroundColor Yellow $Result.minNumberOfLowercaseChars
+}
+Write-Host -NoNewline "Number of digits: "
+if($Result.minNumberOfDigits -ge 1)
+{
+    Write-Host -ForegroundColor Green $Result.minNumberOfDigits
+}
+else
+{
+    Write-Host -ForegroundColor Yellow $Result.minNumberOfDigits
+}
+Write-Host -NoNewline "Number of special: "
+if($Result.minNumberOfNonAlphanumericChars -ge 1)
+{
+    Write-Host -ForegroundColor Green $Result.minNumberOfNonAlphanumericChars
+}
+else
+{
+    Write-Host -ForegroundColor Yellow $Result.minNumberOfNonAlphanumericChars
+}
+
+Write-Output ""
+
+###Cluster upgrade status
+Write-Host -ForegroundColor Cyan "Dynatrace Managed upgrade precondition check"
+$Endpoint = "/api/v1.0/onpremise/upgradeManagement/clusterUpgradeStartupState"
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+
+Write-Host -NoNewline "Precondition status: "
+if($Result.state -eq "FINISHED")
+{
+    Write-Host -ForegroundColor Green $Result.state
+}
+elseif($Result.state -eq "UNDEFINED")
+{
+    Write-Host -ForegroundColor Gray "$($Result.state) - likely that there is no upgrade package"
+}
+elseif($Result.state -eq "NODEKEEPER_UPGRADE")
+{
+    Write-Host -ForegroundColor Green "$($Result.state)"
+}
+elseif($Result.state -eq "LAUNCHING")
+{
+    Write-Host -ForegroundColor Green "$($Result.state) - upgrade is starting"
+}
+elseif($Result.state -eq "SYSTEM_CHECK")
+{
+    Write-Host -ForegroundColor Gray "$($Result.state) - running precondition check"
+}
+elseif($Result.state -eq "ERROR")
+{
+    Write-Host -ForegroundColor Red "$($Result.state) - $($Result.error)"
+}
+else
+{
+    Write-Host -ForegroundColor Yellow "$($Result.state) - $($Result.error)"
+}
+
+Write-Output ""
+
+###Cluster ActiveGate URL
+Write-Host -ForegroundColor Cyan "Cluster ActiveGate URL"
+$Endpoint = "/api/v1.0/onpremise/endpoint/beaconForwarderAddress"
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+
+Write-Host -NoNewline "Cluster ActiveGate URL for Agentless RUM data is: "
+Write-Host -ForegroundColor Green $Result.address
+
+Write-Output ""
+
+###SMTP mail configuration
+Write-Host -ForegroundColor Cyan "Email server (SMTP) configuration"
+$Endpoint = "/api/v1.0/onpremise/smtp"
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders
+ 
+Write-Host -NoNewline "Sending mail via SMTP is: "
+if($Result.useSmtpServer)
+{
+    Write-Host -ForegroundColor Green "Enabled"
+}
+else
+{
+    Write-Host -ForegroundColor Yellow "Disabled"
+}
+
+Write-Host -NoNewline "SMTP server: "
+
+    Write-Host -ForegroundColor Green "$($Result.hostName):$($Result.port)"
+
+    Write-Host -NoNewline "SMTP encryption protocol: "
+
+    Write-Host -ForegroundColor Green "$($Result.connectionSecurity)"
+
+        Write-Host -NoNewline "SMTP authenticating service account: "
+
+    Write-Host -ForegroundColor Green "$($Result.userName)"
+
+    Write-Host -NoNewline "SMTP sending address: "
+
+    Write-Host -ForegroundColor Green "$($Result.senderEmailAddress)"
+
+    Write-Output ""
+
+
+###  Self monitoring maintenance windows
+if($Tenant -eq "dev123144")
+{
+    $SelfMonURLHeaders = $URLHeaders
+    $SelfMonURLHeaders.Authorization = "Api-Token $Dev_SelfMon_Token"
+    #If token is in new format, send just the ID part of the token to Dynatrace
+    if($Dev_SelfMon_Token -match "dt0c01\.[\w]+")
+    {
+        $SelfMonURLHeaders."dynatrace-api-token-id" = $Matches.Values[0]
+    }
+    $Endpoint = "/api/config/v1/maintenanceWindows"
+    $Result = Invoke-RestMethod -Uri ($DEV_SelfMon_API + $Endpoint) -Method 'GET' -Headers $SelfMonURLHeaders 
+}
+
+
+###Environments
+Write-Host -ForegroundColor Cyan "Environments"
+$Endpoint = "/api/cluster/v2/environments"
+$targetURL = 
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+
+Write-Host -NoNewline "The cluster has "
+Write-Host -NoNewline -ForegroundColor Green "$($Result.totalCount)"
+Write-Host " environments:"
+Write-Output ""
+
+###Main list
+foreach ($Environment in $Result.environments)
+{
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($Environment.id)"
+    Write-Host -NoNewline ": "
+    if($Environment.state -eq "ENABLED")
+    {
+        Write-Host -NoNewline  -ForegroundColor Green "$($Environment.state)"
+    }
+    else
+    {
+        Write-Host -NoNewline  -ForegroundColor Gray "$($Environment.state)"
+    
+    }
+    Write-Host -NoNewline ": "
+    Write-Host $Environment.name
+
+}
+Write-Output ""
+
+###ActiveGates
+Write-Host -ForegroundColor Cyan "Cluster ActiveGates"
+$Endpoint = "/api/cluster/v2/activeGates"
+#$Endpoint = "/api/cluster/v2/activeGates?type=CLUSTER"
+$Result = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $Endpoint) -Method 'GET' -Headers $URLHeaders 
+
+Write-Host -NoNewline "The cluster has "
+Write-Host -NoNewline -ForegroundColor Green "$($Result.activeGates.length)"
+Write-Host " ActiveGates:"
+Write-Output ""
+
+###Cluster nodes status
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline ": "
+    Write-Host -NoNewline -ForegroundColor White "$($ActiveGate.hostname)"
+    
+    Write-Host -NoNewline ": "
+    Write-Host -NoNewline -ForegroundColor White "$($ActiveGate.osType)"
+    if($ActiveGate.state -eq "ENABLED")
+    {
+        Write-Host  -ForegroundColor Green "$($ActiveGate.state)"
+    }
+    else
+    {
+        Write-Host  -ForegroundColor Gray "$($ActiveGate.state)"
+    
+    }
+
+}
+Write-Output ""
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+           if($ActiveGate.id -like "0x1e22d95f")
+    {
+        continue
+    }
+    if($ActiveGate.id -like "0x6b531516")
+    {
+        $ActiveGate.autoUpdateStatus = "OUTDATED"
+    }
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " update status is "
+    if($ActiveGate.autoUpdateStatus -eq "UP2DATE")
+    {
+        Write-Host -ForegroundColor Green "up to date ($($ActiveGate.hostname))"
+    }
+    elseif($ActiveGate.autoUpdateStatus -eq "UPDATE_PENDING")
+    {
+        Write-Host -ForegroundColor Cyan "UPDATE_PENDING ($($ActiveGate.hostname))"
+    }
+    elseif($ActiveGate.autoUpdateStatus -eq "UPDATE_IN_PROGRESS")
+    {
+        Write-Host -ForegroundColor Magenta "UPDATE_IN_PROGRESS ($($ActiveGate.hostname))"
+    }
+    elseif($ActiveGate.autoUpdateStatus -eq "UNKNOWN")
+    {
+        if($ActiveGate.id -eq "0x6b531516")
+        {
+            Write-Host -ForegroundColor Gray "UNKNOWN ($($ActiveGate.hostname))"
+            #Write-Host $ActiveGate
+        }
+        elseif($ActiveGate.id -eq "0x20535639")
+        {
+            Write-Host -ForegroundColor Gray "UNKNOWN ($($ActiveGate.hostname))"
+            #Write-Host $ActiveGate
+        }
+        else
+        {
+            Write-Host -ForegroundColor Red "UNKNOWN ($($ActiveGate.hostname))"
+            Write-Host $ActiveGate
+        }
+    }
+    elseif($ActiveGate.autoUpdateStatus -eq "OUTDATED")
+    {
+        if($ActiveGate.containerized)
+        {
+            Write-Host  -ForegroundColor Gray "$($ActiveGate.autoUpdateStatus) ($($ActiveGate.hostname)) - OpenShift ActiveGates still in-progress"
+        }
+        else
+        {
+            Write-Host  -ForegroundColor Yellow "$($ActiveGate.autoUpdateStatus) ($($ActiveGate.hostname))"
+        }
+    }
+    else
+    {
+        Write-Host  -ForegroundColor Yellow "$($ActiveGate.autoUpdateStatus) ($($ActiveGate.hostname))"
+    
+    }
+
+}
+Write-Output ""
+
+
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " connection status "
+    if($ActiveGate.offlineSince -eq $null)
+    {
+        Write-Host -ForegroundColor Green "connected ($($ActiveGate.hostname))"
+    }
+    else
+    {
+        Write-Host -ForegroundColor Yellow "offline since $( (Get-Date 01.01.1970)+([System.TimeSpan]::FromMilliseconds($ActiveGate.offlineSince))) ($($ActiveGate.hostname))"
+    
+    }
+
+}
+Write-Output ""
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " network addresses: "
+    Write-Host -ForegroundColor Green "$($ActiveGate.networkAddresses) ($($ActiveGate.hostname))"
+
+}
+Write-Output ""
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+    if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " ActiveGate token enforcement "
+    if($ActiveGate.activeGateTokens -eq $null)
+    {
+        Write-Host -ForegroundColor GRAY "unknown ($($ActiveGate.hostname))"
+    }
+    elseif($ActiveGate.activeGateTokens.state -eq "VALID")
+    {
+        Write-Host -ForegroundColor GREEN "valid token ($($ActiveGate.hostname))"
+    }
+    elseif($ActiveGate.activeGateTokens.state -eq "INVALID")
+    {
+        Write-Host -ForegroundColor RED "invalid token ($($ActiveGate.hostname))"
+    }
+    elseif($ActiveGate.activeGateTokens.state -eq "EXPIRING")
+    {
+        Write-Host -ForegroundColor YELLOW "invalid token ($($ActiveGate.hostname))"
+    }
+    elseif($ActiveGate.activeGateTokens.state -eq "ABSENT")
+    {
+        Write-Host -ForegroundColor RED "absent token ($($ActiveGate.hostname))"
+    }
+    elseif($ActiveGate.activeGateTokens.state -eq "UNKNOWN")
+    {
+        Write-Host -ForegroundColor RED "unknown token ($($ActiveGate.hostname))"
+    }
+    else
+    {
+        Write-Host -ForegroundColor RED "$($ActiveGate.activeGateTokens.state) token"
+    }
+
+}
+Write-Output ""
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    $SyntheticEnabled = $ActiveGate.modules | where-object {$_.type -eq "SYNTHETIC"} | Select-Object -ExpandProperty {enabled}
+
+    if (-not $SyntheticEnabled)
+    { 
+        continue
+    }
+    if ($ActiveGate.hostname -eq "EUVSAS32056.intdev.deptdev.local")
+    { 
+        continue
+    }
+    if($ActiveGate.hostname -like "*INFMON*")
+    {
+        #Write-Output "Skipping DSS environment ActiveGates"
+        #continue
+    }
+    if($ActiveGate.hostname -like "dcaosp1-0a079760.csda.gov.au")
+    {
+        Write-Output "Skipping Lab environment ActiveGates"
+        continue
+    
+    }
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " synthetic engine status "
+
+    if($ActiveGate.type -eq "CLUSTER")
+    {    
+        
+        $EndpointEngine = "/api/cluster/v2/synthetic/nodes/$([Convert]::ToString($ActiveGate.id,10))"
+        #$Endpoint = "/api/cluster/v2/activeGates?type=CLUSTER"
+        $ResultEngine = Invoke-RestMethod -Uri ("https://" + $ClusterInputURL + $EndpointEngine) -Method 'GET' -Headers $URLHeaders 
+    }
+    elseif ($DSSNonProd_Environment -match "$($ActiveGate.environments[0])")
+    {
+        
+        $DSSSynthURLHeaders = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+        $DSSSynthURLHeaders.Add("accept", "application/json; charset=utf-8")
+        $DSSSynthURLHeaders.Add("Content-Type", "application/json; charset=utf-8")
+        $DSSSynthURLHeaders.Add("Authorization", "Api-Token $DSS_NonProd_SynthHealthToken")
+        #If token is in new format, send just the ID part of the token to Dynatrace
+        if($DSS_NonProd_SynthHealthToken -match "dt0c01\.[\w]+")
+        {
+            $DSSSynthURLHeaders.add("dynatrace-api-token-id", $Matches.Values[0])
+        }
+
+        
+        $EndpointEngine = "/api/v2/synthetic/nodes/$([Convert]::ToString($ActiveGate.id,10))"
+    
+        $ResultEngine = Invoke-RestMethod -Uri ($DSSNonProd_Environment + $EndpointEngine) -Method 'GET' -Headers $DSSSynthURLHeaders 
+    }
+    else
+    {
+        
+        $SynthURLHeaders = New-Object "System.Collections.Generic.Dictionary[[String],[String]]"
+        $SynthURLHeaders.Add("accept", "application/json; charset=utf-8")
+        $SynthURLHeaders.Add("Content-Type", "application/json; charset=utf-8")
+        $SynthURLHeaders.Add("Authorization", "Api-Token $SynthLocationsToken")
+        #If token is in new format, send just the ID part of the token to Dynatrace
+        if($SynthLocationsToken -match "dt0c01\.[\w]+")
+        {
+            $SynthURLHeaders.add("dynatrace-api-token-id", $Matches.Values[0])
+        }
+
+        
+        $EndpointEngine = "/api/v2/synthetic/nodes/$([Convert]::ToString($ActiveGate.id,10))"
+    
+        $ResultEngine = Invoke-RestMethod -Uri ($SynthEnvironment + $EndpointEngine) -Method 'GET' -Headers $SynthURLHeaders 
+    }
+    if($ResultEngine.healthCheckStatus -eq "OK")
+    {
+        Write-Host -ForegroundColor Green "OK ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    }
+    elseif($ResultEngine.healthCheckStatus -eq "UPDATE_PENDING")
+    {
+        Write-Host -ForegroundColor Cyan "UPDATE_PENDING ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    }
+    elseif($ResultEngine.healthCheckStatus -eq "UPDATE_IN_PROGRESS")
+    {
+        Write-Host -ForegroundColor Magenta "UPDATE_IN_PROGRESS ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    }
+    elseif($ResultEngine.healthCheckStatus -eq "UNKNOWN")
+    {
+        Write-Host -ForegroundColor Red "UNKNOWN ($($ActiveGate.hostname) - $($ActiveGate.type))"
+        Write-Host $ActiveGate
+    }
+    else
+    {
+        Write-Host  -ForegroundColor Red "$($ResultEngine.healthCheckStatus) ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    
+    }
+
+
+}
+Write-Output ""
+
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    $SyntheticEnabled = $ActiveGate.modules | where-object {$_.type -eq "SYNTHETIC"} | Select-Object -ExpandProperty {enabled}
+
+    if (-not $SyntheticEnabled)
+    { 
+        continue
+    }
+    if($ActiveGate.hostname -like "*INFMON*")
+    {
+        #Write-Output "Skipping DSS environment ActiveGates"
+        #continue
+    }
+    if($ActiveGate.hostname -like "dcaosp1-0a079760.csda.gov.au")
+    {
+        Write-Output "Skipping Lab environment ActiveGates"
+        continue
+    
+    }
+    if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " synthetic module type status "
+
+    $SyntheticModule = $ActiveGate.modules | Where-Object -Property type -eq "SYNTHETIC" | select-Object -ExpandProperty {attributes}
+    if($SyntheticModule.SYNTHETIC_BROWSER_MONITOR -and $SyntheticModule.SYNTHETIC_HTTP_MONITOR)
+    {
+        Write-Host -ForegroundColor Green "BROWSER and HTTP OK ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    }
+    elseif(-Not ($SyntheticModule.SYNTHETIC_BROWSER_MONITOR) -and $SyntheticModule.SYNTHETIC_HTTP_MONITOR)
+    {
+        Write-Host -ForegroundColor Red "HTTP not OK ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    }
+    elseif($SyntheticModule.SYNTHETIC_BROWSER_MONITOR -and -Not ($SyntheticModule.SYNTHETIC_HTTP_MONITOR))
+    {
+        Write-Host -ForegroundColor Red "BROWSER not OK ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    }
+    elseif(-not($SyntheticModule.SYNTHETIC_BROWSER_MONITOR) -and -Not ($SyntheticModule.SYNTHETIC_HTTP_MONITOR))
+    {
+        Write-Host -ForegroundColor Red "BROWSER and HTTP not OK ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    }
+    else
+    {
+        Write-Host  -ForegroundColor Yellow "UNKNOWN $($ResultEngine.healthCheckStatus) ($($ActiveGate.hostname) - $($ActiveGate.type))"
+    
+    }
+
+
+}
+Write-Output ""
+Write-Output "End of Dynatrace Managed health check script"
+exit
+
+$SynthCredential = $null
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    $SyntheticEnabled = $ActiveGate.modules | where-object {$_.type -eq "SYNTHETIC"} | Select-Object -ExpandProperty {enabled}
+
+    if (-not $SyntheticEnabled)
+    { 
+        continue
+    }
+
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " synthetic service user account status "
+    if($ActiveGate.hostname.StartsWith("DCVSVM") -and -not $ActiveGate.hostname.StartsWith("DCVSVM39") -and -not $ActiveGate.hostname.StartsWith("DCVSVM37"))
+    {
+       $hostname = $ActiveGate.hostname
+        if($null -eq $SynthCredential)
+        {
+            try
+            {
+            $SynthCredential = Get-Credential -Credential 'Internal\svc-syntheticsua'
+            }
+            catch
+            {
+                Write-Output $_
+                exit
+            }
+        }
+        $Service = Invoke-Command -ComputerName $ActiveGate.hostname -Credential $SynthCredential {Get-WmiObject Win32_Service -Filter "name='Dynatrace Synthetic'"}
+
+        if($Service)
+        {
+            if($Service.startName -eq "INTERNAL\svc-syntheticsua" -or $Service.startName -eq "svc-syntheticsua@internal.dept.local")
+            {
+                Write-Host -ForegroundColor Green "Synthetic service account is set to $($Service.startName) ($($ActiveGate.hostname))"
+            }
+            else
+            {
+                Write-Host -ForegroundColor Yellow "Synthetic service account is set to $($Service.startName) ($($ActiveGate.hostname))"
+            }
+        }
+        else
+        {
+            Write-Host -ForegroundColor Red "Unable to retrieve Dynatrace Synthetic service information ($($ActiveGate.hostname))"
+            Write-Host -ForegroundColor White "Probably the wrong password - exiting script for safety"
+            exit
+        }
+        
+    }
+    elseif($ActiveGate.hostname.StartsWith("DCVSVM39"))
+    {
+       $hostname = $ActiveGate.hostname
+        if($null -eq $SynthCredential)
+        {
+            try
+            {
+            $SynthCredential = Get-Credential -Credential 'Internal\svc-syntheticsua'
+            }
+            catch
+            {
+                Write-Output $_
+                exit
+            }
+        }
+        $Service = Invoke-Command -ComputerName $ActiveGate.hostname -Credential $SynthCredential {Get-WmiObject Win32_Service -Filter "name='Dynatrace Synthetic'"}
+
+        if($Service)
+        {
+            if($Service.startName -ieq "INTERNAL\svc-monitoring-kofax" -or $Service.startName -ieq "svc-monitoring-kofax@internal.dept.local")
+            {
+                Write-Host -ForegroundColor Green "Synthetic service account is set to $($Service.startName) ($($ActiveGate.hostname))"
+            }
+            else
+            {
+                Write-Host -ForegroundColor Yellow "Synthetic service account is set to $($Service.startName) ($($ActiveGate.hostname))"
+            }
+        }
+        else
+        {
+            Write-Host -ForegroundColor Red "Unable to retrieve Dynatrace Synthetic service information ($($ActiveGate.hostname))"
+            Write-Host -ForegroundColor White "Probably the wrong password - exiting script for safety"
+            exit
+        }
+        
+    }
+    else
+    {
+        Write-Host -ForegroundColor Gray "Synthetic ActiveGate not a virtual workstation ($($ActiveGate.hostname))"
+    }
+
+}
+
+Write-Output ""
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    $SyntheticEnabled = $ActiveGate.modules | where-object {$_.type -eq "SYNTHETIC"} | Select-Object -ExpandProperty {enabled}
+
+    if (-not $SyntheticEnabled)
+    { 
+        continue
+    }
+
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " synthetic user logon status "
+    if($ActiveGate.hostname.StartsWith("DCVSVM"))
+    {
+       $hostname = $ActiveGate.hostname
+       $UserSession = $null
+        if($null -eq $SynthCredential)
+        {
+            $SynthCredential = Get-Credential -Credential 'Internal\svc-syntheticsua'
+        }
+        
+            $UserSession = $null
+            $UserSession = Invoke-Command -ComputerName $ActiveGate.hostname -Credential $SynthCredential { quser 2>$null }
+
+            if(($UserSession -like '*svc-syntheticsua*Active*').Count -gt 0)
+            {
+                Write-Host -ForegroundColor Green "Synthetic ActiveGate VM is logged in as svc-syntheticsua ($($ActiveGate.hostname))"
+            }
+            else
+            {
+                Write-Host -ForegroundColor Red "Synthetic ActiveGate VM is not logged in ($($ActiveGate.hostname)) - if not sure how to login, see Cluster Update SOP: section Optional: Fixing Synthetic ActiveGate User"
+            }
+       
+    }
+    else
+    {
+        Write-Host -ForegroundColor Gray "Synthetic ActiveGate not a virtual workstation ($($ActiveGate.hostname))"
+    }
+
+}
+
+Write-Output ""
+
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+    if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    $SyntheticEnabled = $ActiveGate.modules | where-object {$_.type -eq "SYNTHETIC"} | Select-Object -ExpandProperty {enabled}
+
+    if (-not $SyntheticEnabled)
+    { 
+        continue
+    }
+
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " synthetic service watcher scheduled task "
+    if($ActiveGate.hostname.StartsWith("DCVSVM"))
+    {
+       $hostname = $ActiveGate.hostname
+        if($null -eq $SynthCredential)
+        {
+            $SynthCredential = Get-Credential -Credential 'Internal\svc-syntheticsua'
+        }
+        $ScheduledTask = Invoke-Command -ComputerName $ActiveGate.hostname -Credential $SynthCredential {Get-ScheduledTask -TaskName "Synthetic ActiveGate Service User Preservation"}
+
+        if($ScheduledTask)
+        {
+            if($ScheduledTask.State -eq "Running")
+            {
+                Write-Host -ForegroundColor Green "Synthetic ActiveGate Service User Preservation is running ($($ActiveGate.hostname))"
+            }
+            else
+            {
+                $ScheduledTask = Invoke-Command -ComputerName $ActiveGate.hostname -Credential $SynthCredential {Start-ScheduledTask -TaskName "Synthetic ActiveGate Service User Preservation"}
+                Write-Host -ForegroundColor Cyan "Started Synthetic ActiveGate Service User Preservation $($Service.startName) ($($ActiveGate.hostname))"
+            }
+        }
+        else
+        {
+            Write-Host -ForegroundColor Red "Unable to retrieve Synthetic ActiveGate Service User Preservation ($($ActiveGate.hostname))"
+        }
+        
+    }
+
+    else
+    {
+        Write-Host -ForegroundColor Gray "Synthetic ActiveGate not a virtual workstation ($($ActiveGate.hostname))"
+    }
+
+}
+
+Write-Output ""
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    $SyntheticEnabled = $ActiveGate.modules | where-object {$_.type -eq "SYNTHETIC"} | Select-Object -ExpandProperty {enabled}
+
+    if (-not $SyntheticEnabled)
+    { 
+        continue
+    }
+
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " synthetic service automatic recovery "
+    if($ActiveGate.hostname.StartsWith("DCVSVM") -and -not $ActiveGate.hostname.StartsWith("DCVSVM39") -and -not $ActiveGate.hostname.StartsWith("DCVSVM37"))
+    {
+       $hostname = $ActiveGate.hostname
+        if($null -eq $SynthCredential)
+        {
+            $SynthCredential = Get-Credential -Credential 'Internal\svc-syntheticsua'
+        }
+        $SynthServiceRecovery = Invoke-Command -ComputerName $ActiveGate.hostname -Credential $SynthCredential {sc.exe failure 'Dynatrace Synthetic' actions= restart/0 reset= 3600}
+
+        if($SynthServiceRecovery)
+        {
+            if($SynthServiceRecovery-eq "[SC] ChangeServiceConfig2 SUCCESS")
+            {
+                Write-Host -ForegroundColor Green "Synthetic ActiveGate Service is set to automatically restart if it stops ($($ActiveGate.hostname))"
+            }
+            else
+            {
+                Write-Host -ForegroundColor Yellow "Error setting Synthetic ActiveGate Service to automatically restart $SynthServiceRecovery ($($ActiveGate.hostname))"
+            }
+        }
+        else
+        {
+            Write-Host -ForegroundColor Red "Unable to set Synthetic ActiveGate Service to automatically restart ($($ActiveGate.hostname))"
+        }
+        
+    }
+
+    else
+    {
+        Write-Host -ForegroundColor Gray "Synthetic ActiveGate not a virtual workstation ($($ActiveGate.hostname))"
+    }
+
+}
+Write-Output ""
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    $SyntheticEnabled = $ActiveGate.modules | where-object {$_.type -eq "SYNTHETIC"} | Select-Object -ExpandProperty {enabled}
+
+    if (-not $SyntheticEnabled)
+    { 
+        continue
+    }
+
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " synthetic service automatic recovery "
+    if($ActiveGate.hostname.StartsWith("DCVSVM") -and -not $ActiveGate.hostname.StartsWith("DCVSVM39") -and -not $ActiveGate.hostname.StartsWith("DCVSVM37"))
+    {
+       $hostname = $ActiveGate.hostname
+        if($null -eq $SynthCredential)
+        {
+            $SynthCredential = Get-Credential -Credential 'Internal\svc-syntheticsua'
+        }
+        $GWServiceRecovery = Invoke-Command -ComputerName $ActiveGate.hostname -Credential $SynthCredential {sc.exe failure 'Dynatrace Gateway' actions= restart/0 reset= 3600}
+
+        if($GWServiceRecovery)
+        {
+            if($GWServiceRecovery-eq "[SC] ChangeServiceConfig2 SUCCESS")
+            {
+                Write-Host -ForegroundColor Green "ActiveGate Gateway Service is set to automatically restart if it stops ($($ActiveGate.hostname))"
+            }
+            else
+            {
+                Write-Host -ForegroundColor Yellow "Error setting ActiveGate Gateway Service to automatically restart $GWServiceRecovery ($($ActiveGate.hostname))"
+            }
+        }
+        else
+        {
+            Write-Host -ForegroundColor Red "Unable to set ActiveGate Gateway Service to automatically restart ($($ActiveGate.hostname))"
+        }
+        
+    }
+
+    else
+    {
+        Write-Host -ForegroundColor Gray "Synthetic ActiveGate not a virtual workstation ($($ActiveGate.hostname))"
+    }
+
+}
+
+Write-Output ""
+
+foreach ($ActiveGate in $Result.activeGates)
+{
+        if($ActiveGate.id -like "0x6428985d")
+    {
+        continue
+    }
+    Write-Host -NoNewline ""
+    Write-Host -NoNewline -ForegroundColor Magenta "$($ActiveGate.id)"
+    Write-Host -NoNewline " disk free status "
+    if($ActiveGate.hostname.StartsWith("DCVSVM"))
+    {
+       $hostname = $ActiveGate.hostname
+        if($null -eq $SynthCredential)
+        {
+            $SynthCredential = Get-Credential -Credential 'Internal\svc-syntheticsua'
+        }
+        $Drive = Invoke-Command -ComputerName $ActiveGate.hostname -Credential $SynthCredential {Get-PSDrive C}
+
+        $PercentUsed = [Math]::Round($Drive.Used / ($Drive.Used + $Drive.Free) * 100,2)
+        $TotalSpace = [Math]::Round(($Drive.Used + $Drive.Free)/1024/1024/1024,2)
+        if($PercentUsed -lt 92)
+        {
+            Write-Host -ForegroundColor Green "Used disk space percent = $($PercentUsed)% out of $TotalSpace GB ($($hostname))"
+        }
+        elseif($PercentUsed -lt 95)
+        {
+            Write-Host -ForegroundColor Yellow "Used disk space percent = $($PercentUsed)% out of $TotalSpace GB ($($hostname))"
+        }
+        else
+        {
+            Write-Host -ForegroundColor Red "Used disk space percent = $($PercentUsed)% out of $TotalSpace GB ($($hostname))"
+        }
+    }
+    else
+    {
+        Write-Host -ForegroundColor Gray "no disk space check yet"
+    
+    }
+
+}
+
