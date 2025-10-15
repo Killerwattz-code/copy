@@ -1,0 +1,227 @@
+---
+- name: Dynatrace Managed Health Check - Elasticsearch
+  hosts: localhost
+  gather_facts: false
+
+  vars_prompt:
+    - name: tenant
+      prompt: "Which Dynatrace tenant? (prod / preprod / dev)"
+      private: no
+
+  vars_files:
+    - "vars/{{ tenant }}.yml"
+
+  vars:
+    pb:
+      rc: 0
+      details: []
+    es_url: "https://elasticsearch.maas.csda.gov.au:9200"
+    es_index: "dynatrace-healthcheck"
+    es_user: "ansible_ingest"
+    es_pass: "{{ vault_es_password }}"   # stored securely in vault
+
+  tasks:
+
+    - name: Prepare Dynatrace API headers
+      set_fact:
+        api_headers:
+          Accept: "application/json; charset=utf-8"
+          Content-Type: "application/json; charset=utf-8"
+          Authorization: "Api-Token {{ api_token }}"
+
+    ########################################################################
+    # Core Cluster Checks
+    ########################################################################
+
+    - name: Cluster Nodes
+      uri:
+        url: "https://{{ cluster_url }}/api/v1.0/onpremise/cluster"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+        return_content: yes
+      register: cluster_nodes
+      failed_when: false
+
+    - name: Add Cluster Nodes result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'Cluster Nodes', 'value': cluster_nodes.json | to_json } ] }}"
+
+    - name: Cluster Configuration
+      uri:
+        url: "https://{{ cluster_url }}/api/v1.0/onpremise/cluster/configuration"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+        return_content: yes
+      register: cluster_config
+      failed_when: false
+
+    - name: Add Cluster Config result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'Cluster Configuration', 'value': cluster_config.json | to_json } ] }}"
+
+    ########################################################################
+    # Security & Policy Checks
+    ########################################################################
+
+    - name: Password Policy
+      uri:
+        url: "https://{{ cluster_url }}/api/v1.0/onpremise/passwordPolicy"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+      register: password_policy
+      failed_when: false
+
+    - name: Add Password Policy result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'Password Policy', 'value': password_policy.json | to_json } ] }}"
+
+    ########################################################################
+    # Backup, SSL, License
+    ########################################################################
+
+    - name: Backup Config
+      uri:
+        url: "https://{{ cluster_url }}/api/v1.0/onpremise/backup/config"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+      register: backup_config
+      failed_when: false
+
+    - name: Add Backup Config result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'Backup Config', 'value': backup_config.json | to_json } ] }}"
+
+    - name: SSL Certificate Info
+      uri:
+        url: "https://{{ cluster_url }}/api/v1.0/onpremise/sslCertificate/SERVER"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+      register: ssl_info
+      failed_when: false
+
+    - name: Add SSL Info result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'SSL Certificate Info', 'value': ssl_info.json | to_json } ] }}"
+
+    - name: License Information
+      uri:
+        url: "https://{{ cluster_url }}/api/v1.0/onpremise/license"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+      register: license_info
+      failed_when: false
+
+    - name: Add License Info result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'License Info', 'value': license_info.json | to_json } ] }}"
+
+    ########################################################################
+    # ActiveGates & Environments
+    ########################################################################
+
+    - name: ActiveGates
+      uri:
+        url: "https://{{ cluster_url }}/api/cluster/v2/activeGates"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+      register: activegates
+      failed_when: false
+
+    - name: Add ActiveGates result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'ActiveGates', 'value': activegates.json | to_json } ] }}"
+
+    - name: Environments
+      uri:
+        url: "https://{{ cluster_url }}/api/cluster/v2/environments"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+      register: environments
+      failed_when: false
+
+    - name: Add Environments result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'Environments', 'value': environments.json | to_json } ] }}"
+
+    ########################################################################
+    # SMTP and Maintenance
+    ########################################################################
+
+    - name: SMTP Configuration
+      uri:
+        url: "https://{{ cluster_url }}/api/v1.0/onpremise/smtp"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+      register: smtp_config
+      failed_when: false
+
+    - name: Add SMTP Config result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'SMTP Config', 'value': smtp_config.json | to_json } ] }}"
+
+    - name: Maintenance Windows
+      uri:
+        url: "https://{{ cluster_url }}/api/v1.0/onpremise/maintenanceWindows"
+        method: GET
+        headers: "{{ api_headers }}"
+        validate_certs: no
+      register: maintenance_windows
+      failed_when: false
+
+    - name: Add Maintenance Windows result
+      set_fact:
+        pb:
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details + [ { 'name': 'Maintenance Windows', 'value': maintenance_windows.json | to_json } ] }}"
+
+    ########################################################################
+    # Send to Elasticsearch
+    ########################################################################
+
+    - name: Send combined results to Elasticsearch
+      uri:
+        url: "{{ es_url }}/{{ es_index }}/_doc"
+        method: POST
+        user: "{{ es_user }}"
+        password: "{{ es_pass }}"
+        force_basic_auth: true
+        validate_certs: no
+        body_format: json
+        body:
+          tenant: "{{ tenant }}"
+          timestamp: "{{ ansible_date_time.iso8601 }}"
+          rc: "{{ pb.rc }}"
+          details: "{{ pb.details }}"
+      register: es_response
+      failed_when: es_response.status not in [200, 201]
+
+    - name: Confirm Elasticsearch ingest
+      debug:
+        msg: "Document indexed successfully as {{ es_response.json._id }}"
