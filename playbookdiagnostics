@@ -1,84 +1,83 @@
 ---
-- name: Dynatrace OneAgent diagnostics (RHEL 6/7, Managed, sudo)
+- name: Dynatrace OneAgent diagnostics (RHEL 6/7, Managed)
   hosts: all
   gather_facts: no
-  become: yes
-  become_method: sudo
+  become: no  # explicit sudo will be used in commands
 
   tasks:
 
     - name: Collect system information
       shell: |
         echo "=== SYSTEM INFORMATION ==="
-        cat /etc/redhat-release 2>/dev/null
-        uname -a
-        uname -m
+        sudo cat /etc/redhat-release 2>/dev/null
+        sudo uname -a
+        sudo uname -m
         echo
         echo "CPU Info:"
-        cat /proc/cpuinfo | grep -E 'processor|model|cpu' | head -20
+        sudo cat /proc/cpuinfo | grep -E 'processor|model|cpu' | head -20
         echo
         echo "Memory Info:"
-        free -m
+        sudo free -m
         echo
         echo "Uptime:"
-        uptime
+        sudo uptime
       register: sys_info
 
     - name: Check Dynatrace OneAgent installation
       shell: |
         echo "=== ONEAGENT INSTALLATION ==="
-        if [ -d /opt/dynatrace/oneagent ]; then
+        if sudo test -d /opt/dynatrace/oneagent; then
           echo "OneAgent installed in /opt/dynatrace/oneagent"
-          ls -ld /opt/dynatrace/oneagent
+          sudo ls -ld /opt/dynatrace/oneagent
         else
           echo "OneAgent directory not found"
         fi
       register: agent_install
 
-    - name: Check OneAgent service and process (SysV)
+    - name: Check OneAgent service and processes (SysV)
       shell: |
         echo "=== ONEAGENT SERVICE STATUS ==="
-        if [ -x /etc/init.d/oneagent ]; then
+        if sudo test -x /etc/init.d/oneagent; then
           sudo /etc/init.d/oneagent status || echo "Service status failed"
         else
           sudo service oneagent status || echo "Service command unavailable"
         fi
         echo
         echo "=== ONEAGENT PROCESSES ==="
-        ps -ef | grep -i oneagent | grep -v grep || echo "No OneAgent processes found"
+        sudo ps -ef | grep -i oneagent | grep -v grep || echo "No OneAgent processes found"
       register: agent_status
 
-    - name: Check OneAgent logs (tail)
+    - name: Check OneAgent logs
       shell: |
         echo "=== ONEAGENT LOGS ==="
-        if [ -d /opt/dynatrace/oneagent/log ]; then
-          find /opt/dynatrace/oneagent/log -type f -name "*.log" -exec ls -lh {} \; 2>/dev/null
+        if sudo test -d /opt/dynatrace/oneagent/log; then
+          sudo find /opt/dynatrace/oneagent/log -type f -name "*.log" -exec ls -lh {} \; 2>/dev/null
           echo
           echo "--- Last 50 lines from recent logs ---"
-          find /opt/dynatrace/oneagent/log -type f -name "*.log" -exec tail -n 50 {} \; 2>/dev/null
+          sudo find /opt/dynatrace/oneagent/log -type f -name "*.log" -exec tail -n 50 {} \; 2>/dev/null
         else
           echo "Log directory not found"
         fi
       register: agent_logs
 
-    - name: Network and cluster connectivity diagnostics
+    - name: Network and Dynatrace Managed cluster connectivity
       shell: |
         echo "=== NETWORK CONFIGURATION ==="
-        /sbin/ifconfig -a 2>/dev/null || ip addr 2>/dev/null
+        sudo /sbin/ifconfig -a 2>/dev/null || sudo ip addr 2>/dev/null
         echo
         echo "=== ROUTES ==="
-        /sbin/route -n 2>/dev/null || ip route 2>/dev/null
+        sudo /sbin/route -n 2>/dev/null || sudo ip route 2>/dev/null
         echo
         echo "=== RESOLV.CONF ==="
-        cat /etc/resolv.conf 2>/dev/null
+        sudo cat /etc/resolv.conf 2>/dev/null
         echo
         echo "=== CONNECTIVITY TO DYNATRACE MANAGED CLUSTER ==="
-        if [ -d /opt/dynatrace/oneagent/agent/config ]; then
-          grep -E "endpoint|server|tenant" /opt/dynatrace/oneagent/agent/config/* 2>/dev/null | head -n 10
-          host=$(grep -Eo '[a-zA-Z0-9._-]+:8021' /opt/dynatrace/oneagent/agent/config/* 2>/dev/null | head -1 | cut -d: -f1)
+        if sudo test -d /opt/dynatrace/oneagent/agent/config; then
+          sudo grep -E "endpoint|server|tenant" /opt/dynatrace/oneagent/agent/config/* 2>/dev/null | head -n 10
+          host=$(sudo grep -Eo '[a-zA-Z0-9._-]+:8021' /opt/dynatrace/oneagent/agent/config/* 2>/dev/null | head -1 | cut -d: -f1)
           if [ -n "$host" ]; then
-            echo "Testing connection to Managed cluster: $host:8021"
-            timeout 5 bash -c "echo > /dev/tcp/$host/8021" && echo "TCP port open" || echo "TCP connection failed"
+            echo "Testing TCP connection to $host:8021"
+            sudo timeout 5 bash -c "echo > /dev/tcp/$host/8021" && echo "TCP port open" || echo "TCP connection failed"
           else
             echo "Cluster endpoint not found in config"
           fi
@@ -90,63 +89,67 @@
     - name: Security configuration (SELinux, iptables)
       shell: |
         echo "=== SELINUX STATUS ==="
-        if [ -x /usr/sbin/getenforce ]; then
+        if sudo test -x /usr/sbin/getenforce; then
           sudo /usr/sbin/getenforce
         else
           echo "getenforce not available"
         fi
         echo
         echo "=== IPTABLES RULES ==="
-        if [ -x /sbin/iptables ]; then
+        if sudo test -x /sbin/iptables; then
           sudo /sbin/iptables -L -n | head -20
         else
           echo "iptables not found"
         fi
       register: security_info
 
-    - name: Environment variables and libraries
+    - name: Environment variables and library presence
       shell: |
         echo "=== DYNATRACE ENVIRONMENT VARIABLES ==="
         env | grep -E 'DYNA|LD_PRELOAD' || echo "No Dynatrace env vars found"
         echo
         echo "=== DYNATRACE LIBRARIES ==="
-        sudo /sbin/ldconfig -p | grep dynatrace 2>/dev/null || echo "No Dynatrace libs registered"
+        if sudo test -x /sbin/ldconfig; then
+          sudo /sbin/ldconfig -p | grep dynatrace 2>/dev/null || echo "No Dynatrace libs registered"
+        else
+          echo "ldconfig not available"
+        fi
       register: env_libs
 
-    - name: Check OneAgent binary compatibility
+    - name: Check OneAgent binary architecture
       shell: |
         echo "=== BINARY ARCHITECTURE ==="
-        if [ -f /opt/dynatrace/oneagent/agent/liboneagentproc.so ]; then
-          file /opt/dynatrace/oneagent/agent/liboneagentproc.so
+        if sudo test -f /opt/dynatrace/oneagent/agent/liboneagentproc.so; then
+          sudo file /opt/dynatrace/oneagent/agent/liboneagentproc.so
         else
           echo "Binary not found"
         fi
       register: binary_check
 
-    - name: Check for process injection
+    - name: Check for Dynatrace injection into processes
       shell: |
         echo "=== INJECTION CHECK ==="
-        for pid in $(ls /proc | grep '^[0-9]'); do
+        for pid in $(sudo ls /proc | grep '^[0-9]'); do
           if sudo grep -q dynatrace /proc/$pid/maps 2>/dev/null; then
-            comm=$(cat /proc/$pid/comm 2>/dev/null)
+            comm=$(sudo cat /proc/$pid/comm 2>/dev/null)
             echo "Injected: $comm ($pid)"
           fi
         done || echo "No injections found"
       register: injection_check
 
-    - name: Gather system logs (SysV only)
+    - name: Collect system logs
       shell: |
         echo "=== SYSTEM LOGS ==="
-        if [ -f /var/log/messages ]; then
+        if sudo test -f /var/log/messages; then
           sudo tail -n 100 /var/log/messages
-        elif [ -f /var/log/syslog ]; then
+        elif sudo test -f /var/log/syslog; then
           sudo tail -n 100 /var/log/syslog
         else
           echo "No system log file found"
         fi
       register: sys_logs
 
-    - name: Write diagnostics report
+    - name: Write consolidated diagnostics file
       copy:
         dest: /tmp/dynatrace_diagnostics.txt
         content: |
