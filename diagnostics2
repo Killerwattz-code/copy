@@ -1,0 +1,70 @@
+---
+- name: Dynatrace OneAgent Diagnostics (RHEL6/7 PPC BE)
+  hosts: all
+  gather_facts: no
+
+  tasks:
+
+    - name: Collect system information
+      shell: |
+        sudo uname -a
+        sudo cat /etc/redhat-release
+        sudo arch
+        sudo lscpu | grep -E 'Architecture|Model|CPU|Endian'
+        sudo uptime
+      register: sys_info
+
+    - name: Check memory, disk, and load
+      shell: |
+        sudo free -m
+        sudo df -h
+        sudo vmstat 1 5
+      register: res_info
+
+    - name: Check OneAgent installation and service status
+      shell: |
+        sudo ls -ld /opt/dynatrace /opt/dynatrace/oneagent 2>/dev/null || true
+        sudo ps -ef | grep -i oneagent | grep -v grep || true
+        sudo /opt/dynatrace/oneagent/agent/tools/oneagentctl --version 2>/dev/null || true
+        sudo /opt/dynatrace/oneagent/agent/tools/oneagentctl --get-app-log-content 2>/dev/null || true
+      register: oneagent_status
+
+    - name: Check OneAgent logs
+      shell: |
+        sudo ls -l /var/log/dynatrace/oneagent/ 2>/dev/null || true
+        sudo tail -n 50 /var/log/dynatrace/oneagent/oneagent.log 2>/dev/null || true
+        sudo tail -n 50 /var/log/dynatrace/oneagent/installer/oneagent_installer.log 2>/dev/null || true
+      register: oneagent_logs
+
+    - name: Check OneAgent connectivity (if Managed)
+      shell: |
+        sudo grep -E 'tenant|server|endpoint' /var/lib/dynatrace/oneagent/agent/config/hostautoconfig.json 2>/dev/null || true
+        sudo cat /etc/hosts | grep -i dynatrace || true
+        sudo netstat -anp | grep -E '9999|8443' || true
+        sudo curl -vk https://$(grep -Eo '([a-zA-Z0-9.-]+)' /var/lib/dynatrace/oneagent/agent/config/hostautoconfig.json 2>/dev/null | head -1):443 2>&1 | head -10 || true
+      register: connectivity
+
+    - name: Check system configuration related to OneAgent
+      shell: |
+        sudo getenforce 2>/dev/null || echo "SELinux not installed"
+        sudo cat /etc/selinux/config 2>/dev/null | grep SELINUX=
+        sudo grep -E 'dynatrace|oneagent' /etc/passwd /etc/group 2>/dev/null || true
+        sudo sysctl net.ipv4.tcp_retries2 net.ipv4.tcp_keepalive_time 2>/dev/null || true
+        sudo iptables -L -n 2>/dev/null | head -20 || true
+      register: sys_config
+
+    - name: Output diagnostic results
+      debug:
+        msg:
+          - "=== System Info ==="
+          - "{{ sys_info.stdout }}"
+          - "=== Resource Info ==="
+          - "{{ res_info.stdout }}"
+          - "=== OneAgent Status ==="
+          - "{{ oneagent_status.stdout }}"
+          - "=== OneAgent Logs ==="
+          - "{{ oneagent_logs.stdout }}"
+          - "=== Connectivity ==="
+          - "{{ connectivity.stdout }}"
+          - "=== System Config ==="
+          - "{{ sys_config.stdout }}"
