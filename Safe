@@ -1,0 +1,38 @@
+- name: Ensure Dynatrace symlink exists (without deleting)
+  hosts: all
+  become: true
+  tasks:
+    - name: Check if source directory exists
+      ansible.builtin.stat:
+        path: /opt/dynatrace/oneagent
+      register: oneagent_src
+
+    - name: Check if destination exists
+      ansible.builtin.stat:
+        path: /var/lib/dynatrace/oneagent
+        follow: false
+      register: oneagent_dst
+
+    - name: Create symlink if destination does not exist
+      ansible.builtin.file:
+        src: /opt/dynatrace/oneagent
+        path: /var/lib/dynatrace/oneagent
+        state: link
+      when:
+        - oneagent_src.stat.exists
+        - not oneagent_dst.stat.exists
+
+    - name: Report if symlink already exists and is correct
+      ansible.builtin.debug:
+        msg: "Symlink already exists and points to the correct location."
+      when:
+        - oneagent_dst.stat.islnk is defined
+        - oneagent_dst.stat.islnk
+        - oneagent_dst.stat.lnk_source == '/opt/dynatrace/oneagent'
+
+    - name: Warn if destination exists and is not a symlink
+      ansible.builtin.debug:
+        msg: "WARNING: /var/lib/dynatrace/oneagent already exists and is not a symlink. Skipping."
+      when:
+        - oneagent_dst.stat.exists
+        - not (oneagent_dst.stat.islnk is defined and oneagent_dst.stat.islnk)
