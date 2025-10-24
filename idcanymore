@@ -1,0 +1,26 @@
+- name: Copy Dynatrace OneAgent files if /var/lib/dynatrace/oneagent/agent is empty
+  hosts: all
+  become: true
+  tasks:
+    - name: Check if /var/lib/dynatrace/oneagent/agent exists
+      ansible.builtin.stat:
+        path: /var/lib/dynatrace/oneagent/agent
+      register: agent_dir
+
+    - name: Get list of files in /var/lib/dynatrace/oneagent/agent
+      ansible.builtin.find:
+        paths: /var/lib/dynatrace/oneagent/agent
+        file_type: any
+      register: agent_files
+      when: agent_dir.stat.exists
+
+    - name: Copy files from /opt/dynatrace/oneagent to /var/lib/dynatrace/oneagent
+      ansible.builtin.copy:
+        src: /opt/dynatrace/oneagent/
+        dest: /var/lib/dynatrace/oneagent/
+        owner: root
+        group: root
+        mode: preserve
+      when:
+        - agent_dir.stat.exists
+        - agent_files.matched == 0
