@@ -1,0 +1,11 @@
+- name: Update Dynatrace library paths
+  ansible.builtin.replace:
+    path: "/var/lib/dynatrace/oneagent/agent/config/ruxitagentproc.conf"
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.replace }}"
+    backup: true
+  loop:
+    - { regexp: '(?m)^libraryPath32.*$', replace: 'libraryPath32 "/opt/dynatrace/oneagent/agent/lib"' }
+    - { regexp: '(?m)^libraryPath64.*$', replace: 'libraryPath64 "/opt/dynatrace/oneagent/agent/lib64"' }
+    - { regexp: '(?m)^libraryPathMusl64.*$', replace: 'libraryPathMusl64 "/opt/dynatrace/oneagent/agent/libmusl64"' }
+    - { regexp: '(?m)^logDir.*$', replace: 'logDir "/opt/dynatrace/oneagent/log"' }
