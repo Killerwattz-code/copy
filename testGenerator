@@ -1,0 +1,204 @@
+import json
+import csv
+from pathlib import Path
+import pandas as pd
+
+# ============================================================
+# Configuration
+# ============================================================
+
+EXCEL_FILE = "tParameters.xlsx"
+OUTPUT_DIR = Path("testcases")
+MATRIX_DIR = Path("reports")
+RC_FAIL = 26
+
+OUTPUT_DIR.mkdir(exist_ok=True)
+MATRIX_DIR.mkdir(exist_ok=True)
+
+# ============================================================
+# Helpers
+# ============================================================
+
+def excel_bool(value):
+    return str(value).strip().lower() in ("true", "yes", "1")
+
+def parse_jsonish(value):
+    if pd.isna(value):
+        return None
+    try:
+        return json.loads(value)
+    except Exception:
+        return value
+
+def observed_type_label(input_type):
+    return {
+        "string": "String",
+        "int": "Integer",
+        "float": "Double",
+        "bool": "Boolean",
+        "list": "List",
+        "dict": "Dict",
+        "none": "None",
+        "blank": "Blank",
+        "undefined": "Undefined",
+    }.get(input_type, input_type)
+
+def invalid_value(scenario):
+    t = scenario["InputType"]
+
+    if t == "undefined":
+        return "__UNDEFINED__"
+    if t == "none":
+        return None
+    if t == "blank":
+        return ""
+    return parse_jsonish(scenario["InputValue"])
+
+def generate_tc_id(param_index, scenario_index):
+    return f"tc{param_index:02d}{scenario_index:02d}"
+
+# ============================================================
+# Message Resolution
+# ============================================================
+
+def resolve_message(param, scenario):
+    var = param["VarName"]
+
+    if scenario["ErrorClass"] == "mandatory":
+        return f"{var} parameter is mandatory."
+
+    if scenario["ErrorClass"] == "datatype":
+        return f"{var} parameter value must be a {param['VarType']}."
+
+    if scenario["ErrorClass"] == "range":
+        return (
+            f"{var} parameter value must be between "
+            f"{param['Lower']} and {param['Upper']}."
+        )
+
+    raise ValueError(f"Unhandled ErrorClass: {scenario['ErrorClass']}")
+
+def resolve_test_name(param, scenario):
+    base = resolve_message(param, scenario)
+
+    if scenario["ErrorClass"] == "mandatory":
+        return base
+
+    return f"{base} (is {observed_type_label(scenario['InputType'])})"
+
+# ============================================================
+# extra_vars Construction
+# ============================================================
+
+def build_extra_vars(params_df, failing_param, scenario):
+    extra_vars = {}
+
+    for _, param in params_df.iterrows():
+        var = param["VarName"]
+
+        if var == failing_param["VarName"]:
+            value = invalid_value(scenario)
+            if value != "__UNDEFINED__":
+                extra_vars[var] = value
+            continue
+
+        default = parse_jsonish(param["DefaultValue"])
+        if default is not None:
+            extra_vars[var] = default
+
+    return extra_vars
+
+# ============================================================
+# Test Case Generation
+# ============================================================
+
+def generate_test_case(tc_id, param, scenario, extra_vars):
+    msg = resolve_message(param, scenario)
+    name = resolve_test_name(param, scenario)
+
+    return {
+        "extra_vars": {
+            "pb_testing": {
+                "name": name,
+                "id": tc_id,
+                "rc": RC_FAIL,
+                "msg": msg,
+            },
+            **extra_vars
+        }
+    }
+
+# ============================================================
+# Main
+# ============================================================
+
+def main():
+    params_df = pd.read_excel(EXCEL_FILE, sheet_name="Parameters")
+    scenarios_df = pd.read_excel(EXCEL_FILE, sheet_name="TestScenarios")
+
+    params_df["Mandatory"] = params_df["Mandatory"].apply(excel_bool)
+    scenarios_df["AppliesToMandatory"] = scenarios_df["AppliesToMandatory"].apply(excel_bool)
+    scenarios_df["AppliesToOptional"] = scenarios_df["AppliesToOptional"].apply(excel_bool)
+
+    params_df["ParamIndex"] = range(1, len(params_df) + 1)
+    scenarios_df["ScenarioIndex"] = range(1, len(scenarios_df) + 1)
+
+    test_matrix = []
+
+    for _, param in params_df.iterrows():
+        applicable = scenarios_df[
+            (scenarios_df["AppliesToMandatory"] & param["Mandatory"]) |
+            (scenarios_df["AppliesToOptional"] & ~param["Mandatory"])
+        ]
+
+        for _, scenario in applicable.iterrows():
+            scenario = scenario.copy()
+
+            # Mandatory precedence override
+            if param["Mandatory"] and scenario["InputType"] in ("undefined", "none", "blank"):
+                scenario["ErrorClass"] = "mandatory"
+
+            tc_id = generate_tc_id(
+                param["ParamIndex"],
+                scenario["ScenarioIndex"]
+            )
+
+            extra_vars = build_extra_vars(params_df, param, scenario)
+            payload = generate_test_case(tc_id, param, scenario, extra_vars)
+
+            with (OUTPUT_DIR / f"{tc_id}.json").open("w") as fh:
+                json.dump(payload, fh, indent=2)
+
+            test_matrix.append({
+                "TestCaseID": tc_id,
+                "Parameter": param["VarName"],
+                "ExpectedType": param["VarType"],
+                "Mandatory": param["Mandatory"],
+                "Scenario": scenario["ScenarioName"],
+                "InputType": scenario["InputType"],
+                "ErrorClass": scenario["ErrorClass"],
+                "Message": resolve_message(param, scenario),
+                "TestName": resolve_test_name(param, scenario),
+            })
+
+    # ========================================================
+    # Test Matrix Reports
+    # ========================================================
+
+    matrix_csv = MATRIX_DIR / "test_matrix.csv"
+    matrix_json = MATRIX_DIR / "test_matrix.json"
+
+    with matrix_csv.open("w", newline="") as fh:
+        writer = csv.DictWriter(fh, fieldnames=test_matrix[0].keys())
+        writer.writeheader()
+        writer.writerows(test_matrix)
+
+    with matrix_json.open("w") as fh:
+        json.dump(test_matrix, fh, indent=2)
+
+    print(f"Generated {len(test_matrix)} test cases")
+    print(f"Test cases: {OUTPUT_DIR}")
+    print(f"Matrix reports: {MATRIX_DIR}")
+
+if __name__ == "__main__":
+    main()
