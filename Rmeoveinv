@@ -6,48 +6,70 @@ HOSTNAME_FILE = Path("/path/to/hostnames.txt")
 
 SECTION_RE = re.compile(r"^\[(.+)]$")
 
-def load_hostnames(path: Path) -> set[str]:
+def load_short_hostnames(path: Path) -> set[str]:
     with path.open("r", encoding="utf-8") as f:
-        return {
+        hostnames = {
             line.strip()
             for line in f
             if line.strip() and not line.strip().startswith("#")
         }
 
-def should_remove_line(line: str, hostnames: set[str]) -> bool:
-    return any(host in line for host in hostnames)
+    # Guardrail: short names only
+    invalid = [h for h in hostnames if "." in h]
+    if invalid:
+        raise ValueError(
+            f"Hostname file must contain short names only, found: {invalid}"
+        )
 
-def clean_inventory(file_path: Path, hostnames: set[str]) -> None:
+    return hostnames
+
+def should_remove_line(line: str, short_hostnames: set[str]) -> bool:
+    stripped = line.strip()
+
+    # Ignore comments and blanks
+    if not stripped or stripped.startswith("#"):
+        return False
+
+    # Extract hostname token
+    fqdn = stripped.split()[0]
+
+    for short in short_hostnames:
+        if fqdn == short:
+            return True
+        if fqdn.startswith(short + "."):
+            return True
+
+    return False
+
+def clean_inventory(file_path: Path, short_hostnames: set[str]) -> None:
     with file_path.open("r", encoding="utf-8") as f:
         lines = f.readlines()
 
-    sections = []
-    current_section = {"name": None, "lines": []}
-
     # --- Split into sections ---
+    sections = []
+    current = {"name": None, "lines": []}
+
     for line in lines:
         match = SECTION_RE.match(line.strip())
         if match:
-            sections.append(current_section)
-            current_section = {
-                "name": match.group(1),
-                "lines": [line],
-            }
+            sections.append(current)
+            current = {"name": match.group(1), "lines": [line]}
         else:
-            current_section["lines"].append(line)
+            current["lines"].append(line)
 
-    sections.append(current_section)
+    sections.append(current)
 
-    # --- First pass: remove host lines ---
+    # --- Remove host lines, preserving original blank lines ---
     for section in sections:
         cleaned = []
         previous_removed = False
 
         for line in section["lines"]:
-            if section["name"] and should_remove_line(line, hostnames):
+            if section["name"] and should_remove_line(line, short_hostnames):
                 previous_removed = True
                 continue
 
+            # Remove only blank lines created by deletions
             if line.strip() == "" and previous_removed:
                 previous_removed = False
                 continue
@@ -75,6 +97,7 @@ def clean_inventory(file_path: Path, hostnames: set[str]) -> None:
 
     # --- Remove empty groups and their dependent sections ---
     final_sections = []
+
     for section in sections:
         name = section["name"]
 
@@ -82,24 +105,24 @@ def clean_inventory(file_path: Path, hostnames: set[str]) -> None:
             final_sections.append(section)
             continue
 
-        base = name.split(":", 1)[0]
+        base_group = name.split(":", 1)[0]
 
-        if base in empty_groups:
+        if base_group in empty_groups:
             continue
 
         final_sections.append(section)
 
-    # --- Write back ---
+    # --- Write cleaned inventory back ---
     with file_path.open("w", encoding="utf-8") as f:
         for section in final_sections:
             f.writelines(section["lines"])
 
 def main():
-    hostnames = load_hostnames(HOSTNAME_FILE)
+    short_hostnames = load_short_hostnames(HOSTNAME_FILE)
 
     for file_path in TARGET_DIR.iterdir():
         if file_path.is_file():
-            clean_inventory(file_path, hostnames)
+            clean_inventory(file_path, short_hostnames)
 
 if __name__ == "__main__":
     main()
