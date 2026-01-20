@@ -1,0 +1,105 @@
+from pathlib import Path
+import re
+
+TARGET_DIR = Path("/path/to/target/directory")
+HOSTNAME_FILE = Path("/path/to/hostnames.txt")
+
+SECTION_RE = re.compile(r"^\[(.+)]$")
+
+def load_hostnames(path: Path) -> set[str]:
+    with path.open("r", encoding="utf-8") as f:
+        return {
+            line.strip()
+            for line in f
+            if line.strip() and not line.strip().startswith("#")
+        }
+
+def should_remove_line(line: str, hostnames: set[str]) -> bool:
+    return any(host in line for host in hostnames)
+
+def clean_inventory(file_path: Path, hostnames: set[str]) -> None:
+    with file_path.open("r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    sections = []
+    current_section = {"name": None, "lines": []}
+
+    # --- Split into sections ---
+    for line in lines:
+        match = SECTION_RE.match(line.strip())
+        if match:
+            sections.append(current_section)
+            current_section = {
+                "name": match.group(1),
+                "lines": [line],
+            }
+        else:
+            current_section["lines"].append(line)
+
+    sections.append(current_section)
+
+    # --- First pass: remove host lines ---
+    for section in sections:
+        cleaned = []
+        previous_removed = False
+
+        for line in section["lines"]:
+            if section["name"] and should_remove_line(line, hostnames):
+                previous_removed = True
+                continue
+
+            if line.strip() == "" and previous_removed:
+                previous_removed = False
+                continue
+
+            cleaned.append(line)
+            previous_removed = False
+
+        section["lines"] = cleaned
+
+    # --- Identify empty base groups ---
+    empty_groups = set()
+
+    for section in sections:
+        name = section["name"]
+        if not name or ":" in name:
+            continue
+
+        has_hosts = any(
+            line.strip() and not line.strip().startswith("#")
+            for line in section["lines"][1:]
+        )
+
+        if not has_hosts:
+            empty_groups.add(name)
+
+    # --- Remove empty groups and their dependent sections ---
+    final_sections = []
+    for section in sections:
+        name = section["name"]
+
+        if not name:
+            final_sections.append(section)
+            continue
+
+        base = name.split(":", 1)[0]
+
+        if base in empty_groups:
+            continue
+
+        final_sections.append(section)
+
+    # --- Write back ---
+    with file_path.open("w", encoding="utf-8") as f:
+        for section in final_sections:
+            f.writelines(section["lines"])
+
+def main():
+    hostnames = load_hostnames(HOSTNAME_FILE)
+
+    for file_path in TARGET_DIR.iterdir():
+        if file_path.is_file():
+            clean_inventory(file_path, hostnames)
+
+if __name__ == "__main__":
+    main()
