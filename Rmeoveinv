@@ -1,77 +1,69 @@
 import requests
-from collections import defaultdict
-from itertools import islice
+from urllib.parse import quote
 
 # ======================
 # CONFIG
 # ======================
 DYNATRACE_BASE_URL = "https://YOUR_ENV.live.dynatrace.com"
 API_TOKEN = "DT_API_TOKEN"
+HOST_FILE = "hosts.txt"
+
+TARGET_TAG_KEY = "dt.owner"
 
 HEADERS = {
     "Authorization": f"Api-Token {API_TOKEN}",
     "Accept": "application/json"
 }
 
-HOSTNAMES = [
-    "host01.example.com",
-    "host02.example.com",
-    "host03.example.com"
-]
-
-TARGET_TAG_KEY = "dt.owner"
-BATCH_SIZE = 50   # safe size for entityName.in()
-
-
 # ======================
 # HELPERS
 # ======================
-def chunked(iterable, size):
-    it = iter(iterable)
-    while True:
-        batch = list(islice(it, size))
-        if not batch:
-            return
-        yield batch
+def read_hostnames(path):
+    with open(path) as f:
+        return [
+            line.strip()
+            for line in f
+            if line.strip() and not line.startswith("#")
+        ]
 
 
-def resolve_hostnames_to_entity_ids(hostnames):
+def short_name(host):
+    return host.split(".")[0]
+
+
+def resolve_hostname(hostname):
     """
-    Resolve hostnames to HOST entityIds.
-    Returns dict: hostname -> entityId
+    Resolve a hostname to a single HOST entityId.
+    Returns None if not found or ambiguous.
     """
-    mapping = {}
+    sn = short_name(hostname)
+    selector = f"type(HOST),entityName.contains({quote(sn)})"
 
-    for batch in chunked(hostnames, BATCH_SIZE):
-        selector = (
-            'type(HOST),'
-            f'entityName.in({",".join(batch)})'
-        )
+    resp = requests.get(
+        f"{DYNATRACE_BASE_URL}/api/v2/entities",
+        headers=HEADERS,
+        params={"entitySelector": selector, "fields": "entityId,displayName"},
+        timeout=30,
+    )
+    resp.raise_for_status()
 
-        url = f"{DYNATRACE_BASE_URL}/api/v2/entities"
-        params = {
-            "entitySelector": selector,
-            "fields": "entityId,displayName"
-        }
+    entities = resp.json().get("entities", [])
+    if len(entities) == 1:
+        return entities[0]["entityId"]
 
-        response = requests.get(url, headers=HEADERS, params=params, timeout=30)
-        response.raise_for_status()
-
-        for entity in response.json().get("entities", []):
-            mapping[entity["displayName"]] = entity["entityId"]
-
-    return mapping
+    return None
 
 
 def get_dt_owner(entity_id):
-    url = f"{DYNATRACE_BASE_URL}/api/v2/entities/{entity_id}"
-    params = {"fields": "tags"}
+    resp = requests.get(
+        f"{DYNATRACE_BASE_URL}/api/v2/entities/{entity_id}",
+        headers=HEADERS,
+        params={"fields": "tags"},
+        timeout=30,
+    )
+    resp.raise_for_status()
 
-    response = requests.get(url, headers=HEADERS, params=params, timeout=30)
-    response.raise_for_status()
-
-    tags = response.json().get("tags", {}).get("list", [])
-    for tag in tags:
+    for tag in resp.json().get("tags", {}).get("list", []):
         if tag.get("key") == TARGET_TAG_KEY:
             return tag.get("value")
 
@@ -81,35 +73,35 @@ def get_dt_owner(entity_id):
 # ======================
 # MAIN
 # ======================
-hostname_to_entity = resolve_hostnames_to_entity_ids(HOSTNAMES)
+hostnames = read_hostnames(HOST_FILE)
 
 host_to_owner = {}
 owners = set()
 
-for hostname in HOSTNAMES:
-    entity_id = hostname_to_entity.get(hostname)
-
-    if not entity_id:
-        host_to_owner[hostname] = "NOT FOUND"
-        continue
-
+for host in hostnames:
     try:
+        entity_id = resolve_hostname(host)
+
+        if not entity_id:
+            host_to_owner[host] = "NOT FOUND / AMBIGUOUS"
+            continue
+
         owner = get_dt_owner(entity_id)
-        host_to_owner[hostname] = owner
+        host_to_owner[host] = owner
         if owner:
             owners.add(owner)
 
     except requests.RequestException as e:
-        host_to_owner[hostname] = "ERROR"
-        print(f"Failed retrieving tags for {hostname}: {e}")
+        host_to_owner[host] = "ERROR"
+        print(f"{host}: {e}")
 
 # ======================
 # OUTPUT
 # ======================
 print("\nHost → Owner")
-for host, owner in host_to_owner.items():
-    print(f"{host}: {owner}")
+for h, o in host_to_owner.items():
+    print(f"{h}: {o}")
 
-print("\nUnique owners to contact")
-for owner in sorted(owners):
-    print(owner)
+print("\nOwners to contact")
+for o in sorted(owners):
+    print(o)
