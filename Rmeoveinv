@@ -1,128 +1,115 @@
-from pathlib import Path
-import re
+import requests
+from collections import defaultdict
+from itertools import islice
 
-TARGET_DIR = Path("/path/to/target/directory")
-HOSTNAME_FILE = Path("/path/to/hostnames.txt")
+# ======================
+# CONFIG
+# ======================
+DYNATRACE_BASE_URL = "https://YOUR_ENV.live.dynatrace.com"
+API_TOKEN = "DT_API_TOKEN"
 
-SECTION_RE = re.compile(r"^\[(.+)]$")
+HEADERS = {
+    "Authorization": f"Api-Token {API_TOKEN}",
+    "Accept": "application/json"
+}
 
-def load_short_hostnames(path: Path) -> set[str]:
-    with path.open("r", encoding="utf-8") as f:
-        hostnames = {
-            line.strip()
-            for line in f
-            if line.strip() and not line.strip().startswith("#")
+HOSTNAMES = [
+    "host01.example.com",
+    "host02.example.com",
+    "host03.example.com"
+]
+
+TARGET_TAG_KEY = "dt.owner"
+BATCH_SIZE = 50   # safe size for entityName.in()
+
+
+# ======================
+# HELPERS
+# ======================
+def chunked(iterable, size):
+    it = iter(iterable)
+    while True:
+        batch = list(islice(it, size))
+        if not batch:
+            return
+        yield batch
+
+
+def resolve_hostnames_to_entity_ids(hostnames):
+    """
+    Resolve hostnames to HOST entityIds.
+    Returns dict: hostname -> entityId
+    """
+    mapping = {}
+
+    for batch in chunked(hostnames, BATCH_SIZE):
+        selector = (
+            'type(HOST),'
+            f'entityName.in({",".join(batch)})'
+        )
+
+        url = f"{DYNATRACE_BASE_URL}/api/v2/entities"
+        params = {
+            "entitySelector": selector,
+            "fields": "entityId,displayName"
         }
 
-    # Guardrail: short names only
-    invalid = [h for h in hostnames if "." in h]
-    if invalid:
-        raise ValueError(
-            f"Hostname file must contain short names only, found: {invalid}"
-        )
+        response = requests.get(url, headers=HEADERS, params=params, timeout=30)
+        response.raise_for_status()
 
-    return hostnames
+        for entity in response.json().get("entities", []):
+            mapping[entity["displayName"]] = entity["entityId"]
 
-def should_remove_line(line: str, short_hostnames: set[str]) -> bool:
-    stripped = line.strip()
+    return mapping
 
-    # Ignore comments and blanks
-    if not stripped or stripped.startswith("#"):
-        return False
 
-    # Extract hostname token
-    fqdn = stripped.split()[0]
+def get_dt_owner(entity_id):
+    url = f"{DYNATRACE_BASE_URL}/api/v2/entities/{entity_id}"
+    params = {"fields": "tags"}
 
-    for short in short_hostnames:
-        if fqdn == short:
-            return True
-        if fqdn.startswith(short + "."):
-            return True
+    response = requests.get(url, headers=HEADERS, params=params, timeout=30)
+    response.raise_for_status()
 
-    return False
+    tags = response.json().get("tags", {}).get("list", [])
+    for tag in tags:
+        if tag.get("key") == TARGET_TAG_KEY:
+            return tag.get("value")
 
-def clean_inventory(file_path: Path, short_hostnames: set[str]) -> None:
-    with file_path.open("r", encoding="utf-8") as f:
-        lines = f.readlines()
+    return None
 
-    # --- Split into sections ---
-    sections = []
-    current = {"name": None, "lines": []}
 
-    for line in lines:
-        match = SECTION_RE.match(line.strip())
-        if match:
-            sections.append(current)
-            current = {"name": match.group(1), "lines": [line]}
-        else:
-            current["lines"].append(line)
+# ======================
+# MAIN
+# ======================
+hostname_to_entity = resolve_hostnames_to_entity_ids(HOSTNAMES)
 
-    sections.append(current)
+host_to_owner = {}
+owners = set()
 
-    # --- Remove host lines, preserving original blank lines ---
-    for section in sections:
-        cleaned = []
-        previous_removed = False
+for hostname in HOSTNAMES:
+    entity_id = hostname_to_entity.get(hostname)
 
-        for line in section["lines"]:
-            if section["name"] and should_remove_line(line, short_hostnames):
-                previous_removed = True
-                continue
+    if not entity_id:
+        host_to_owner[hostname] = "NOT FOUND"
+        continue
 
-            # Remove only blank lines created by deletions
-            if line.strip() == "" and previous_removed:
-                previous_removed = False
-                continue
+    try:
+        owner = get_dt_owner(entity_id)
+        host_to_owner[hostname] = owner
+        if owner:
+            owners.add(owner)
 
-            cleaned.append(line)
-            previous_removed = False
+    except requests.RequestException as e:
+        host_to_owner[hostname] = "ERROR"
+        print(f"Failed retrieving tags for {hostname}: {e}")
 
-        section["lines"] = cleaned
+# ======================
+# OUTPUT
+# ======================
+print("\nHost → Owner")
+for host, owner in host_to_owner.items():
+    print(f"{host}: {owner}")
 
-    # --- Identify empty base groups ---
-    empty_groups = set()
-
-    for section in sections:
-        name = section["name"]
-        if not name or ":" in name:
-            continue
-
-        has_hosts = any(
-            line.strip() and not line.strip().startswith("#")
-            for line in section["lines"][1:]
-        )
-
-        if not has_hosts:
-            empty_groups.add(name)
-
-    # --- Remove empty groups and their dependent sections ---
-    final_sections = []
-
-    for section in sections:
-        name = section["name"]
-
-        if not name:
-            final_sections.append(section)
-            continue
-
-        base_group = name.split(":", 1)[0]
-
-        if base_group in empty_groups:
-            continue
-
-        final_sections.append(section)
-
-    # --- Write cleaned inventory back ---
-    with file_path.open("w", encoding="utf-8") as f:
-        for section in final_sections:
-            f.writelines(section["lines"])
-
-def main():
-    short_hostnames = load_short_hostnames(HOSTNAME_FILE)
-
-    for file_path in TARGET_DIR.iterdir():
-        if file_path.is_file():
-            clean_inventory(file_path, short_hostnames)
-
-if __name__ == "__main__":
-    main()
+print("\nUnique owners to contact")
+for owner in sorted(owners):
+    print(owner)
